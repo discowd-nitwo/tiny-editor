@@ -3,9 +3,29 @@ import sys
 import argparse
 
 class Window:
-    def __init__(self, n_rows, n_cols):
+    def __init__(self, n_rows, n_cols, row=0, col=0):
         self.n_rows = n_rows
         self.n_cols = n_cols
+        self.row = row
+        self.col = col
+    
+    @property
+    def bottom(self):
+        return self.row + self.n_rows - 1
+    
+    def up(self):
+        return self.row + self.n_rows - 1
+
+    def down(self, buffer, cursor):
+        if cursor.row == self.bottom + 1 and self.bottom < buffer.bottom:
+            self.row += 1
+    
+    def translate(self, cursor):
+        return cursor.row - self.row, cursor.col - self.col
+    
+    def horizontal_scroll(self, cursor, left_margin=5, right_margin=2):
+        n_pages = cursor.col // (self.n_cols - right_margin)
+        self.col = max(n_pages * self.n_cols - right_margin - left_margin, 0)
 
 class Cursor:
     def __init__(self, row=0, col=0, col_hint=None):
@@ -28,7 +48,7 @@ class Cursor:
             self._clamp_col(buffer)
     
     def down(self, buffer):
-        if self.row < len(buffer) - 1:
+        if self.row < buffer.bottom:
             self.row += 1
             self._clamp_col(buffer)
     
@@ -45,9 +65,41 @@ class Cursor:
     def right(self, buffer):
         if self.col < len(buffer[self.row]):
             self.col += 1
-        elif self.row < len(buffer) - 1:
+        elif self.row < buffer.bottom:
             self.row += 1
             self.col = 0
+
+class Buffer:
+
+    @property
+    def bottom(self):
+        return len(self) - 1
+
+    def __init__(self, lines):
+        self.lines = lines
+    
+    def __len__(self):
+        return len(self.lines)
+    
+    def __getitem__(self, index):
+        return self.lines[index]
+    
+    def insert(self, cursor, string):
+        row, col = cursor.row, cursor.col
+        current = self.lines.pop(row)
+        new = current[:col] + string + current[col:]
+        self.lines.insert(row, new)
+    
+    def split(self, cursor):
+        row, col = cursor.row, cursor.col
+        current = self.lines.pop(row)
+        self.lines.insert(row, current[:col])
+        self.lines.insert(row + 1, current[col:])
+
+def right(window, buffer, cursor):
+    cursor.right(buffer)
+    window.down(buffer, cursor)
+    window.horizontal_scroll(cursor)
 
 def main(stdscr):
     parser = argparse.ArgumentParser()
@@ -55,28 +107,45 @@ def main(stdscr):
     args = parser.parse_args()
 
     with open(args.filename) as f:
-        buffer = f.readlines()
+        buffer = Buffer(f.read().splitlines())
 
     window = Window(curses.LINES - 1, curses.COLS - 1)
     cursor = Cursor()
 
     while True:
         stdscr.erase()
-        for row, line in enumerate(buffer[:window.n_rows:]):
-            stdscr.addstr(row, 0, line[:window.n_cols:])
-        stdscr.move(cursor.row, cursor.col)
+        for row, line in enumerate(buffer[window.row:window.row + window.n_rows]):
+            if row == cursor.row - window.row and window.col > 0:
+                line = "«" + line[window.col + 1:]
+            if len(line) > window.n_cols:
+                line = line[:window.n_cols - 1] + "»"
+            stdscr.addstr(row, 0, line)
+        stdscr.move(*window.translate(cursor))
 
         k = stdscr.getkey()
         if k == "q":
             sys.exit(0)
         elif k == "KEY_UP":
             cursor.up(buffer)
+            window.up()
+            window.horizontal_scroll(cursor)
         elif k == "KEY_DOWN":
             cursor.down(buffer)
+            window.down(buffer, cursor)
+            window.horizontal_scroll(cursor)
         elif k == "KEY_LEFT":
             cursor.left(buffer)
+            window.up()
+            window.horizontal_scroll(cursor)
         elif k == "KEY_RIGHT":
-            cursor.right(buffer)
+            right(window, buffer, cursor)
+        elif k == "\n":
+            buffer.split(cursor)
+            right(window, buffer, cursor)
+        else:
+            buffer.insert(cursor, k)
+            for _ in k:
+                right(window, buffer, cursor)
 
 if __name__ == "__main__":
     curses.wrapper(main)
